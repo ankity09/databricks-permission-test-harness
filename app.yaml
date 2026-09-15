@@ -1,0 +1,35 @@
+# Databricks Apps runtime config (used by UI deploys).
+#
+# OBO (on-behalf-of) note — confirmed against the databricks-apps platform guide:
+#   * The end-user OAuth token is forwarded in the `x-forwarded-access-token` header.
+#   * The app SP credential is auto-injected as DATABRICKS_CLIENT_ID / DATABRICKS_CLIENT_SECRET
+#     (WorkspaceClient() with no args picks it up) — this is the probe/tester identity.
+#   * The user-authorization scopes this app needs are declared as `user_api_scopes`
+#     in databricks.yml (sql, iam.access-control:read, iam.current-user:read).
+#     Every deploy can wipe scopes (update_mask replaces wholesale) — re-apply after deploy.
+#   * User authorization is a workspace-admin-enabled Public Preview; it must be enabled
+#     on the workspace or /api/me will 401 with "user token passthrough not enabled".
+
+command:
+  # Wrap in a shell so ${DATABRICKS_APP_PORT} expands (argv form runs no shell).
+  - sh
+  - -c
+  - uvicorn app.main:app --host 0.0.0.0 --port ${DATABRICKS_APP_PORT:-8000}
+
+env:
+  # SQL warehouse the probes + grant/revoke statements run on.
+  - name: HARNESS_WAREHOUSE_ID
+    valueFrom: sql-warehouse
+  # Lakebase (Autoscaling Postgres). PGHOST/PGPORT/PGDATABASE/PGUSER are
+  # auto-injected by the platform for the first `postgres` resource; the
+  # endpoint path (used to mint the DB credential) resolves from the resource.
+  - name: LAKEBASE_ENDPOINT
+    valueFrom: lakebase
+  - name: HARNESS_DB_SCHEMA
+    value: perm_harness
+  # Unity AI Gateway model service the agent calls (governed LLM + guardrails).
+  # Set these to the deployed model-service base url + 3-part name.
+  - name: UAIG_BASE_URL
+    value: ""
+  - name: UAIG_MODEL_SERVICE
+    value: ""

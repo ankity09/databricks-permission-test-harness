@@ -1,0 +1,23 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Databricks bundle state (per-clone, must not be committed)
+.databricks/
+
+# Node / Vite
+client/node_modules/
+client/dist/
+
+# Local env + bundle variable files (may contain workspace-specific ids)
+.env
+*.local
+*.tfvars
+.databricks-vars.json
+bundle.vars.json
+
+# OS / editor
+.DS_Store
+*.swp

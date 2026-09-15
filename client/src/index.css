@@ -1,0 +1,67 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Palette as space-separated RGB channels so Tailwind's /opacity utilities
+   work. Two themes: dark console (default) + DuBois light (Oat neutral).
+   Toggled by data-theme on <html>. */
+:root,
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --c-base: 10 15 28; /* #0A0F1C */
+  --c-surface: 17 24 39; /* #111827 */
+  --c-surface-2: 22 30 46; /* #161E2E */
+  --c-line: 35 44 61; /* #232C3D */
+  --c-lava: 255 54 33; /* #FF3621 */
+  --c-lava-dim: 196 43 24; /* #C42B18 */
+  --c-pass: 18 183 106; /* #12B76A */
+  --c-fail: 240 68 56; /* #F04438 */
+  --c-warn: 247 144 9; /* #F79009 */
+  --c-ink: 232 234 237; /* #E8EAED */
+  --c-ink-dim: 154 164 178; /* #9AA4B2 */
+  --c-ink-faint: 91 100 114; /* #5B6472 */
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+  --c-base: 238 237 233; /* #EEEDE9 DuBois Oat */
+  --c-surface: 255 255 255; /* #FFFFFF */
+  --c-surface-2: 245 244 240; /* #F5F4F0 */
+  --c-line: 214 212 205; /* #D6D4CD */
+  --c-lava: 255 54 33; /* #FF3621 — accent unchanged */
+  --c-lava-dim: 196 43 24; /* #C42B18 */
+  --c-pass: 3 152 85; /* #039855 darker for contrast on light */
+  --c-fail: 209 45 32; /* #D12D20 */
+  --c-warn: 181 100 0; /* #B56400 */
+  --c-ink: 26 32 44; /* #1A202C navy-ink */
+  --c-ink-dim: 74 85 101; /* #4A5565 */
+  --c-ink-faint: 122 130 143; /* #7A828F */
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: rgb(var(--c-base));
+  color: rgb(var(--c-ink));
+  font-family: 'DM Sans', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+/* thin custom scrollbars, themed */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgb(var(--c-line));
+  border-radius: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}

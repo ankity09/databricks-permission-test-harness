@@ -1,0 +1,5 @@
+# Intentionally malformed: the descriptor is missing grant_sql/revoke_sql/probe.
+actions:
+  - id: broken.descriptor
+    tab: uc-data
+    label: Broken

@@ -1,0 +1,91 @@
+# DABs bundle for the Permission Test Harness app.
+#
+# user_api_scopes declares the OBO scopes the app is allowed to use on behalf of
+# the logged-in admin. These are load-bearing:
+#   sql                       -> run GRANT/REVOKE and probe SELECTs as the admin/SP
+#   iam.access-control:read   -> read workspace-object effective permission levels
+#   iam.current-user:read     -> /api/me (OBO verification)
+# NOTE: every deploy can wipe scopes (update_mask replaces wholesale). If OBO
+# breaks after a deploy, re-apply via `databricks apps create-update` merging
+# resources, or redeploy this bundle.
+
+bundle:
+  name: permission-test-harness
+
+# client/dist is gitignored (build output) but MUST ship so FastAPI can serve
+# the React app. Force-include it; keep heavy local dirs out of the upload.
+sync:
+  include:
+    - client/dist/**
+  exclude:
+    - .venv/**
+    - client/node_modules/**
+    - tests/**
+    - "**/__pycache__/**"
+
+resources:
+  apps:
+    permission-test-harness:
+      name: permission-test-harness
+      source_code_path: .
+      config:
+        command:
+          # Wrap in a shell so ${DATABRICKS_APP_PORT} expands (argv form runs no shell).
+          - sh
+          - -c
+          - uvicorn app.main:app --host 0.0.0.0 --port ${DATABRICKS_APP_PORT:-8000}
+        env:
+          - name: HARNESS_WAREHOUSE_ID
+            value_from: sql-warehouse
+          - name: LAKEBASE_ENDPOINT
+            value: projects/${var.lakebase_project}/branches/production/endpoints/${var.lakebase_endpoint}
+          - name: HARNESS_DB_SCHEMA
+            value: perm_harness
+          - name: UAIG_BASE_URL
+            value: ${var.uaig_base_url}
+          - name: UAIG_MODEL_SERVICE
+            value: ${var.uaig_model_service}
+      user_api_scopes:
+        # iam.access-control:read / iam.current-user:read are default scopes
+        # granted automatically (and rejected if declared explicitly here).
+        # serving.serving-endpoints lets the OBO token call the UAIG model
+        # service (/ai-gateway) as the logged-in admin (usage attributes to them).
+        - sql
+        - serving.serving-endpoints
+      resources:
+        - name: sql-warehouse
+          sql_warehouse:
+            id: ${var.warehouse_id}
+            permission: CAN_USE
+        - name: lakebase
+          postgres:
+            branch: projects/${var.lakebase_project}/branches/production
+            database: projects/${var.lakebase_project}/branches/production/databases/databricks-postgres
+            permission: CAN_CONNECT_AND_CREATE
+
+# All variables are workspace-specific and have NO defaults on purpose: this is a
+# portable template. `scripts/setup.sh` (or the Genie Code runbook) provisions the
+# non-DABs prerequisites and prints these 5 values; pass them at deploy time via
+# `--var` or a target block. See README "Deploy" for the exact commands.
+variables:
+  warehouse_id:
+    description: SQL warehouse id used for probe + grant/revoke statements.
+  lakebase_project:
+    description: Lakebase project id (Autoscaling Postgres) for activity_log/scenarios.
+  lakebase_endpoint:
+    description: Lakebase endpoint id under the production branch (usually "primary").
+  uaig_base_url:
+    description: Unity AI Gateway base url, e.g. https://<workspace-host>/ai-gateway/mlflow/v1
+  uaig_model_service:
+    description: 3-part UC model-service name (guardrails attached), catalog.schema.service
+
+targets:
+  dev:
+    default: true
+    # Example (fill in from setup.sh output, or pass via --var on the CLI):
+    # variables:
+    #   warehouse_id: 0123456789abcdef
+    #   lakebase_project: perm-harness-lakebase
+    #   lakebase_endpoint: primary
+    #   uaig_base_url: https://your-workspace.cloud.databricks.com/ai-gateway/mlflow/v1
+    #   uaig_model_service: main.perm_harness.harness_agent

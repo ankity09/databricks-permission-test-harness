@@ -1,0 +1,219 @@
+# Permission Test Harness — action catalog (v1 seed).
+#
+# This file is DATA, not code. Adding a new testable action is a config edit,
+# never an app rewrite. The engine (apply-to-SP -> attempt -> report -> revoke)
+# never changes; new securable types / permission levels enter here as new
+# descriptors.
+#
+# Descriptor shape:
+#   id           unique dotted id (e.g. uc.table.select)
+#   tab          "uc-data" | "workspace"
+#   label        human label shown in the UI
+#   grant_sql    template with {securable} and {sp} placeholders (uc-data only)
+#   revoke_sql   template with {securable} and {sp} placeholders (uc-data only)
+#   probe:
+#     kind       "sql" | "permission-check"
+#     statement  (sql)  template with {securable}; a side-effect-free probe
+#     api        (permission-check) permissions API object type
+#     level      (permission-check) the CAN_* level a pass requires
+#   side_effect  "none" | "write-guarded"  (write-guarded => real write only when really_do)
+
+# ============================================================================
+# Tab A — Unity Catalog data access (SP runs a real, side-effect-free probe)
+# ============================================================================
+actions:
+  - id: uc.catalog.use
+    tab: uc-data
+    label: USE CATALOG
+    grant_sql: "GRANT USE CATALOG ON CATALOG {securable} TO `{sp}`"
+    revoke_sql: "REVOKE USE CATALOG ON CATALOG {securable} FROM `{sp}`"
+    probe:
+      kind: sql
+      statement: "SHOW SCHEMAS IN {securable}"
+    side_effect: none
+
+  - id: uc.schema.use
+    tab: uc-data
+    label: USE SCHEMA
+    grant_sql: "GRANT USE SCHEMA ON SCHEMA {securable} TO `{sp}`"
+    revoke_sql: "REVOKE USE SCHEMA ON SCHEMA {securable} FROM `{sp}`"
+    probe:
+      kind: sql
+      statement: "SHOW TABLES IN {securable}"
+    side_effect: none
+
+  - id: uc.table.select
+    tab: uc-data
+    label: SELECT on table
+    grant_sql: "GRANT SELECT ON TABLE {securable} TO `{sp}`"
+    revoke_sql: "REVOKE SELECT ON TABLE {securable} FROM `{sp}`"
+    probe:
+      kind: sql
+      statement: "SELECT * FROM {securable} LIMIT 1"
+    side_effect: none
+
+  - id: uc.table.modify
+    tab: uc-data
+    label: MODIFY on table (write-guarded)
+    grant_sql: "GRANT MODIFY ON TABLE {securable} TO `{sp}`"
+    revoke_sql: "REVOKE MODIFY ON TABLE {securable} FROM `{sp}`"
+    probe:
+      kind: sql
+      # Safe default: plan-only validation, no rows written. The real write
+      # (INSERT of a marker row + rollback-style cleanup) runs only when really_do.
+      statement: "EXPLAIN INSERT INTO {securable} SELECT * FROM {securable} WHERE 1=0"
+    side_effect: write-guarded
+
+  - id: uc.volume.read
+    tab: uc-data
+    label: READ VOLUME
+    grant_sql: "GRANT READ VOLUME ON VOLUME {securable} TO `{sp}`"
+    revoke_sql: "REVOKE READ VOLUME ON VOLUME {securable} FROM `{sp}`"
+    probe:
+      kind: sql
+      statement: "LIST '/Volumes/{securable_path}'"
+    side_effect: none
+
+  - id: uc.volume.write
+    tab: uc-data
+    label: WRITE VOLUME (write-guarded)
+    grant_sql: "GRANT WRITE VOLUME ON VOLUME {securable} TO `{sp}`"
+    revoke_sql: "REVOKE WRITE VOLUME ON VOLUME {securable} FROM `{sp}`"
+    probe:
+      kind: sql
+      statement: "LIST '/Volumes/{securable_path}'"
+    side_effect: write-guarded
+
+  - id: uc.function.execute
+    tab: uc-data
+    label: EXECUTE on function
+    grant_sql: "GRANT EXECUTE ON FUNCTION {securable} TO `{sp}`"
+    revoke_sql: "REVOKE EXECUTE ON FUNCTION {securable} FROM `{sp}`"
+    probe:
+      kind: sql
+      statement: "DESCRIBE FUNCTION {securable}"
+    side_effect: none
+
+  - id: uc.model.read
+    tab: uc-data
+    label: READ on registered model (EXECUTE)
+    grant_sql: "GRANT EXECUTE ON MODEL {securable} TO `{sp}`"
+    revoke_sql: "REVOKE EXECUTE ON MODEL {securable} FROM `{sp}`"
+    probe:
+      kind: sql
+      statement: "SHOW GRANTS ON MODEL {securable}"
+    side_effect: none
+
+# ============================================================================
+# Tab B — Workspace object permissions
+# (default: permission-level check; opt-in "really do it" behind really_do)
+# ============================================================================
+  - id: ws.job.can_run
+    tab: workspace
+    label: Job — CAN_RUN
+    grant_sql: ""
+    revoke_sql: ""
+    probe:
+      kind: permission-check
+      api: jobs
+      level: CAN_MANAGE_RUN
+    side_effect: write-guarded
+
+  - id: ws.job.can_manage
+    tab: workspace
+    label: Job — CAN_MANAGE
+    grant_sql: ""
+    revoke_sql: ""
+    probe:
+      kind: permission-check
+      api: jobs
+      level: CAN_MANAGE
+    side_effect: none
+
+  - id: ws.warehouse.can_use
+    tab: workspace
+    label: SQL Warehouse — CAN_USE
+    grant_sql: ""
+    revoke_sql: ""
+    probe:
+      kind: permission-check
+      api: warehouses
+      level: CAN_USE
+    side_effect: none
+
+  - id: ws.warehouse.can_manage
+    tab: workspace
+    label: SQL Warehouse — CAN_MANAGE
+    grant_sql: ""
+    revoke_sql: ""
+    probe:
+      kind: permission-check
+      api: warehouses
+      level: CAN_MANAGE
+    side_effect: none
+
+  - id: ws.notebook.can_read
+    tab: workspace
+    label: Notebook/folder — CAN_READ
+    grant_sql: ""
+    revoke_sql: ""
+    probe:
+      kind: permission-check
+      api: notebooks
+      level: CAN_READ
+    side_effect: none
+
+  - id: ws.pipeline.can_run
+    tab: workspace
+    label: DLT/Lakeflow pipeline — CAN_RUN
+    grant_sql: ""
+    revoke_sql: ""
+    probe:
+      kind: permission-check
+      api: pipelines
+      level: CAN_RUN
+    side_effect: write-guarded
+
+  - id: ws.serving.can_query
+    tab: workspace
+    label: Serving endpoint — CAN_QUERY
+    grant_sql: ""
+    revoke_sql: ""
+    probe:
+      kind: permission-check
+      api: serving-endpoints
+      level: CAN_QUERY
+    side_effect: write-guarded
+
+  - id: ws.serving.can_manage
+    tab: workspace
+    label: Serving endpoint — CAN_MANAGE
+    grant_sql: ""
+    revoke_sql: ""
+    probe:
+      kind: permission-check
+      api: serving-endpoints
+      level: CAN_MANAGE
+    side_effect: none
+
+  - id: ws.cluster.can_attach
+    tab: workspace
+    label: Cluster — CAN_ATTACH_TO
+    grant_sql: ""
+    revoke_sql: ""
+    probe:
+      kind: permission-check
+      api: clusters
+      level: CAN_ATTACH_TO
+    side_effect: none
+
+  - id: ws.cluster.can_manage
+    tab: workspace
+    label: Cluster — CAN_MANAGE
+    grant_sql: ""
+    revoke_sql: ""
+    probe:
+      kind: permission-check
+      api: clusters
+      level: CAN_MANAGE
+    side_effect: none
