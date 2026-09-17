@@ -55,3 +55,14 @@ class ScenarioSaveRequest(BaseModel):
 
 class AgentChatRequest(BaseModel):
     messages: list[dict]
+
+
+class QueryRequest(BaseModel):
+    # exactly one of sql (free-text, read-only enforced) or table (guided path)
+    sql: Optional[str] = None
+    table: Optional[str] = None
+    limit: int = 50
+
+
+class SweepRequest(BaseModel):
+    securable: str

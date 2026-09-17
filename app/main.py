@@ -50,10 +50,16 @@ from app.models import (
     ProbeRequest,
     ProbeResult,
     PromoteInfo,
+    QueryRequest,
     ScenarioRunRequest,
     ScenarioSaveRequest,
+    SweepRequest,
 )
 from app.probe import run_probe
+from app.query import build_select, run_query_as_sp
+from app.masking import describe_governance
+from app.sweep import build_targets, run_sweep
+from app.sql_guard import assert_read_only, ReadOnlyViolation
 
 
 @asynccontextmanager
@@ -502,6 +508,101 @@ def _safe_read_activity(a):
         )
     except Exception:  # noqa: BLE001
         return []
+
+
+def _obo_row_exec(request: Request):
+    """Return an exec(sql)->list[dict] that runs under the OBO admin client.
+
+    Used for read-only metadata lookups (masking annotations, sweep target
+    enumeration) that the logged-in admin is entitled to perform.
+    """
+    client = get_obo_client(request)  # raises 401 if OBO token missing
+    warehouse_id = get_settings().warehouse_id
+
+    def _exec(sql: str):
+        resp = client.statement_execution.execute_statement(
+            statement=sql, warehouse_id=warehouse_id, wait_timeout="30s"
+        )
+        result = getattr(resp, "result", None)
+        data = getattr(result, "data_array", None) if result else None
+        manifest = getattr(resp, "manifest", None)
+        schema = getattr(manifest, "schema", None)
+        cols = [getattr(c, "name", "") for c in (getattr(schema, "columns", None) or [])]
+        rows = []
+        for row in data or []:
+            rows.append(dict(zip(cols, row)) if cols else {"col": row})
+        return rows
+
+    return _exec
+
+
+@api.post("/query")
+async def query(request: Request, body: QueryRequest):
+    """Run a read-only query AS THE APP SP and return rows + mask annotations.
+
+    Free-text SQL is read-only enforced (400 on violation) BEFORE any client is
+    built, so a blocked statement never reaches the SP. The guided path builds
+    its own SELECT from a table name and never accepts user SQL.
+    """
+    if body.sql:
+        try:
+            assert_read_only(body.sql)
+        except ReadOnlyViolation as exc:
+            raise HTTPException(400, str(exc))
+        sql = body.sql
+        table = body.table
+    elif body.table:
+        try:
+            sql = build_select(body.table, body.limit)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        table = body.table
+    else:
+        raise HTTPException(400, "Provide either 'sql' (read-only) or 'table'.")
+
+    # OBO required (for identity/parity + the masking metadata read); check the
+    # token BEFORE building any client so a missing token -> 401, not 500.
+    get_obo_token(request)
+    sp_client = get_sp_client()
+    result = run_query_as_sp(
+        sql, sp_client=sp_client, warehouse_id=get_settings().warehouse_id, limit=body.limit
+    )
+
+    # Mask annotations for single-table queries only (guided path, or a
+    # free-text query the caller tagged with a table). Best-effort; never fatal.
+    governance = {"masked_columns": [], "row_filter": False, "detail": ""}
+    if table:
+        try:
+            governance = describe_governance(_obo_row_exec(request), table)
+        except Exception:  # noqa: BLE001
+            pass
+
+    _log_event(
+        request, event_type="query",
+        action_id="uc.query.run", securable=table or "(free-text)",
+        verdict="pass" if not result.get("error") else "fail_denied",
+        raw_message=result.get("error") or "",
+    )
+    return {**result, "governance": governance}
+
+
+@api.post("/sweep")
+async def sweep(request: Request, body: SweepRequest):
+    """Adversarial read-only reach sweep: enumerate adjacent objects (OBO),
+    attempt harmless reads as the SP, return a boundary matrix."""
+    obo_exec = _obo_row_exec(request)  # raises 401 if OBO token missing
+    sp_client = get_sp_client()
+    targets = build_targets(obo_exec, body.securable)
+    result = run_sweep(
+        targets, sp_client=sp_client, warehouse_id=get_settings().warehouse_id
+    )
+    _log_event(
+        request, event_type="sweep",
+        action_id="uc.sweep.reach", securable=body.securable,
+        verdict="pass" if result["verdict"]["holes"] == 0 else "fail_denied",
+        raw_message=result["verdict"]["status"],
+    )
+    return result
 
 
 @api.post("/reset-sp")
