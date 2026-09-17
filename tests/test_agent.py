@@ -15,6 +15,8 @@ def test_registry_has_no_grant_to_real_principal_tool():
         "save_scenario",
         "run_scenario",
         "get_promotion_directions",
+        "run_query_as_sp",
+        "run_reach_sweep",
     }
     for n in names:
         # the only "promote"-ish tool is the non-mutating directions tool

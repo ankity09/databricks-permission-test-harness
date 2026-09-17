@@ -23,6 +23,8 @@ TOOL_NAMES = (
     "save_scenario",
     "run_scenario",
     "get_promotion_directions",
+    "run_query_as_sp",
+    "run_reach_sweep",
 )
 
 
@@ -85,6 +87,21 @@ def tool_schema() -> list[dict]:
             "Get Unity Catalog steps + deep-link to promote a validated grant to a real user/group.",
             {"action_id": S, "securable": S},
             ["action_id", "securable"],
+        ),
+        fn(
+            "run_query_as_sp",
+            "Run a read-only query AS THE APP SP and return the rows the SP sees "
+            "(so column masks / row filters are visible). Provide a table name or a "
+            "read-only SQL statement.",
+            {"table": S, "sql": S, "limit": {"type": "integer"}},
+        ),
+        fn(
+            "run_reach_sweep",
+            "Adversarial read-only reach sweep: check whether the SP can READ "
+            "adjacent objects (siblings + parents) it was not granted. Returns a "
+            "boundary matrix. Read-only; tests no write/escalation boundaries.",
+            {"securable": S},
+            ["securable"],
         ),
     ]
 

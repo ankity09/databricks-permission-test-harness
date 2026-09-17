@@ -410,6 +410,19 @@ _AGENT_SYSTEM_PROMPT = (
 )
 
 
+def _guard_agent_sql(a: dict) -> str:
+    """Resolve the agent's run_query_as_sp args to a read-only-guarded SQL string.
+
+    Free-text SQL from the model is run through the SAME read-only guard as the
+    API, so the agent path can never execute a mutation even if the model emits
+    one. A table name goes through the guided SELECT builder.
+    """
+    if a.get("sql"):
+        assert_read_only(a["sql"])
+        return a["sql"]
+    return build_select(a["table"], int(a.get("limit", 50)))
+
+
 @api.post("/agent/chat")
 async def agent_chat(request: Request, body: AgentChatRequest):
     token = get_obo_token(request)  # 401 if missing
@@ -479,6 +492,14 @@ async def agent_chat(request: Request, body: AgentChatRequest):
             principal=a.get("principal", "<user-or-group>"),
             host=get_settings().workspace_host, catalog=catalog,
         ).model_dump(),
+        "run_query_as_sp": lambda a: run_query_as_sp(
+            _guard_agent_sql(a),
+            sp_client=sp_client(), warehouse_id=wid, limit=int(a.get("limit", 50)),
+        ),
+        "run_reach_sweep": lambda a: run_sweep(
+            build_targets(_obo_row_exec(request), a["securable"]),
+            sp_client=sp_client(), warehouse_id=wid,
+        ),
     }
 
     def _dispatch(name, args):
