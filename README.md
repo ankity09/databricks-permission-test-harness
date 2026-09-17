@@ -91,10 +91,12 @@ Because every write is a real OBO-signed `GRANT`/`REVOKE`, it lands in Databrick
 ## Features
 
 - **UC Data tab** — test `USE CATALOG/SCHEMA`, `SELECT`, `MODIFY` (write-guarded), `READ/WRITE VOLUME`, `EXECUTE`, model read.
+- **Query runner ("see what the SP sees")** — run a read-only query **as the app SP** and view the actual returned rows, so column masks and row filters are directly observable. Guided one-click (`SELECT * FROM <table> LIMIT 50`) plus an advanced free-text SQL box that is **read-only enforced** (only `SELECT` / `WITH` / `SHOW` / `DESCRIBE` / `EXPLAIN`; mutations, DDL, `GRANT`/`REVOKE`, and multi-statement input are rejected). The results grid is **masking-aware**: it badges columns Unity Catalog is masking and flags an active row filter using UC metadata.
+- **Adversarial reach sweep** — one click auto-enumerates the target's same-schema siblings + parent containers and has the SP attempt a harmless read (`SELECT`/`USE`) against each. Denied = green ("boundary holds"), unexpected success = red ("hole"). **Read-only only**: it makes no claim about write/escalation boundaries — a green sweep means the SP cannot *read* the adjacent objects checked, not that the principal is harmless.
 - **Workspace Objects tab** — jobs, SQL warehouses, notebooks, pipelines, serving endpoints, secret scopes, clusters (effective-permission check by default, opt-in real execution).
 - **Scenarios tab** — define a role as a set of (securable, action) pairs, run the whole set as a batch (apply-all → probe-each → revoke-all), see a pass/fail matrix. Ships with seed templates; custom scenarios persist to Lakebase.
 - **Activity tab** — durable, filterable history of every apply/probe/revoke/promote, backed by Lakebase.
-- **Agent chat dock** — a resizable, collapsible, cross-tab assistant (governed via Unity AI Gateway) that explains UC permissions, reads history, drives the test loop, authors + runs scenarios, and hands you UC promotion **directions** when a test passes. It cannot grant to real users.
+- **Agent chat dock** — a resizable, collapsible, cross-tab assistant (governed via Unity AI Gateway) that explains UC permissions, reads history, drives the test loop, authors + runs scenarios, runs read-only queries + reach sweeps as the SP, and hands you UC promotion **directions** when a test passes. It cannot grant to real users (structurally — there is no such tool).
 
 ---
 
