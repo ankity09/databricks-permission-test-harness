@@ -7,8 +7,10 @@ import type {
   MeResponse,
   ProbeResult,
   PromoteInfo,
+  QueryResult,
   Scenario,
   ScenarioItem,
+  SweepResult,
 } from './types'
 
 const api = axios.create({
@@ -104,6 +106,20 @@ export async function agentChat(
   messages: ChatMessage[],
 ): Promise<{ content: string }> {
   const { data } = await api.post<{ content: string }>('/agent/chat', { messages })
+  return data
+}
+
+// ---- v3 ----
+
+export async function runQuery(
+  body: { sql?: string; table?: string; limit?: number },
+): Promise<QueryResult> {
+  const { data } = await api.post<QueryResult>('/query', body)
+  return data
+}
+
+export async function runSweep(securable: string): Promise<SweepResult> {
+  const { data } = await api.post<SweepResult>('/sweep', { securable })
   return data
 }
 

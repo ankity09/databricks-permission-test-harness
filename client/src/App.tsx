@@ -13,6 +13,8 @@ import { IdentityBanner } from './components/IdentityBanner'
 import { NegativeTestToggle } from './components/NegativeTestToggle'
 import { ObjectPicker } from './components/ObjectPicker'
 import { PromotePanel } from './components/PromotePanel'
+import { QueryRunner } from './components/QueryRunner'
+import { ReachSweep } from './components/ReachSweep'
 import { ResultPanel } from './components/ResultPanel'
 import { ScenariosTab } from './components/ScenariosTab'
 import { ActivityTab } from './components/ActivityTab'
@@ -230,6 +232,13 @@ export default function App() {
           <ResultPanel result={result} busy={busy} />
 
           <PromotePanel actionId={actionId} securable={securable} disabled={!ready} />
+
+          {tab === 'uc-data' && (
+            <>
+              <QueryRunner securable={securable} />
+              <ReachSweep securable={securable} />
+            </>
+          )}
         </div>
 
         {/* Right: activity log */}

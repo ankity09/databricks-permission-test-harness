@@ -122,3 +122,41 @@ export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
 }
+
+// ---- v3: query runner + reach sweep ----
+
+export interface Governance {
+  masked_columns: string[]
+  row_filter: boolean
+  detail: string
+}
+
+export interface QueryResult {
+  columns: string[]
+  rows: unknown[][]
+  truncated: boolean
+  error: string | null
+  governance: Governance
+}
+
+export type SweepCell = 'hold' | 'hole' | 'error'
+
+export interface SweepRow {
+  object: string
+  action: 'use_catalog' | 'use_schema' | 'select'
+  result: SweepCell
+  detail: string
+  raw: string
+}
+
+export interface SweepVerdict {
+  status: 'boundaries_hold' | 'holes_found'
+  holes: number
+  checked: number
+}
+
+export interface SweepResult {
+  matrix: SweepRow[]
+  verdict: SweepVerdict
+  scope_note: string
+}
