@@ -127,12 +127,16 @@ def search_objects(exec_sql: Exec, *, query: str, limit: int = 25) -> List[Dict[
     lim = max(1, min(int(limit), 100))
     results: List[Dict[str, Any]] = []
 
+    # Internal pipeline/materialization tables are never a real grant target;
+    # exclude them so the tester isn't drowned in __materialization_mat_* noise.
+    _noise = "AND table_name NOT LIKE '\\_\\_materialization%' ESCAPE '\\\\'"
+
     # tables + views
     try:
         rows = exec_sql(
             "SELECT table_catalog, table_schema, table_name, table_type "
             "FROM system.information_schema.tables "
-            f"WHERE lower(table_name) LIKE '{like}' "
+            f"WHERE lower(table_name) LIKE '{like}' {_noise} "
             f"ORDER BY table_name LIMIT {lim}"
         )
         for r in rows:
