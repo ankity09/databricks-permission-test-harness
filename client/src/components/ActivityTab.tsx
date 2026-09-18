@@ -4,10 +4,10 @@ import { useStore } from '../store'
 import type { DbHealth, ProbeStatus } from '../types'
 
 const VERDICT_STYLES: Record<string, string> = {
-  pass: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
+  pass: 'bg-pass/15 text-pass border-pass/30',
   fail_denied: 'bg-lava/15 text-lava border-lava/30',
-  grant_failed: 'bg-amber-500/15 text-amber-400 border-amber-500/30',
-  bad_input: 'bg-amber-500/15 text-amber-400 border-amber-500/30',
+  grant_failed: 'bg-warn/15 text-warn border-warn/30',
+  bad_input: 'bg-warn/15 text-warn border-warn/30',
   error: 'bg-lava/15 text-lava border-lava/30',
 }
 
@@ -93,7 +93,7 @@ export function ActivityTab() {
       </div>
 
       {db && !db.ok && (
-        <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-400">
+        <p className="rounded-md border border-warn/30 bg-warn/10 px-3 py-2 text-xs text-warn">
           Activity database not connected ({db.error}). History is unavailable until Lakebase is
           wired. The in-session activity view on the test tabs still works.
         </p>

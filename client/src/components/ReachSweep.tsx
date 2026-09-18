@@ -11,7 +11,7 @@ function errMsg(e: unknown): string {
 }
 
 const CELL_STYLE: Record<SweepCell, string> = {
-  hold: 'text-emerald-500',
+  hold: 'text-pass',
   hole: 'text-lava',
   error: 'text-ink-faint',
 }
@@ -97,7 +97,7 @@ export function ReachSweep({ securable }: Props) {
           className={`rounded-md border px-3 py-2 text-sm font-semibold ${
             v.status === 'holes_found'
               ? 'border-lava/40 bg-lava/5 text-lava'
-              : 'border-emerald-500/40 bg-emerald-500/5 text-emerald-500'
+              : 'border-pass/40 bg-pass/5 text-pass'
           }`}
         >
           {v.status === 'holes_found'

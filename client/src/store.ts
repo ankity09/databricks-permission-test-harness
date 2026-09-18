@@ -11,6 +11,7 @@ import type {
 } from './types'
 
 type Theme = 'dark' | 'light'
+export type Section = 'home' | 'test' | 'scenarios' | 'activity'
 
 const THEME_KEY = 'pth-theme'
 const DOCK_WIDTH_KEY = 'pth-dock-width'
@@ -54,7 +55,13 @@ interface HarnessState {
   actions: ActionDescriptor[]
   setActions: (a: ActionDescriptor[]) => void
 
-  // selection
+  // primary navigation (left rail)
+  section: Section
+  setSection: (s: Section) => void
+  railExpanded: boolean
+  setRailExpanded: (v: boolean) => void
+
+  // Test-canvas mode segmented control (UC data vs workspace objects)
   tab: Tab
   setTab: (t: Tab) => void
   securable: string
@@ -109,6 +116,11 @@ export const useStore = create<HarnessState>((set) => ({
 
   actions: [],
   setActions: (actions) => set({ actions }),
+
+  section: 'home',
+  setSection: (section) => set({ section }),
+  railExpanded: false,
+  setRailExpanded: (railExpanded) => set({ railExpanded }),
 
   tab: 'uc-data',
   setTab: (tab) => set({ tab, actionId: null, result: null }),

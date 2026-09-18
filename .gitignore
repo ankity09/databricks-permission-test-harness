@@ -21,3 +21,6 @@ bundle.vars.json
 # OS / editor
 .DS_Store
 *.swp
+
+# brainstorm visual companion
+.superpowers/
