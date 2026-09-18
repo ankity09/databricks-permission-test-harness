@@ -66,3 +66,14 @@ class QueryRequest(BaseModel):
 
 class SweepRequest(BaseModel):
     securable: str
+
+
+class BrowseRequest(BaseModel):
+    # level in {root, catalog, schema}; parent is the node being expanded
+    level: str = "root"
+    parent: Optional[str] = None
+
+
+class SearchRequest(BaseModel):
+    query: str
+    limit: int = 25

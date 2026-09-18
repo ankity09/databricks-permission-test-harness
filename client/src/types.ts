@@ -160,3 +160,26 @@ export interface SweepResult {
   verdict: SweepVerdict
   scope_note: string
 }
+
+// ---- v4: catalog explorer ----
+
+export type NodeType =
+  | 'catalog'
+  | 'schema'
+  | 'table'
+  | 'view'
+  | 'volume'
+  | 'function'
+
+export interface BrowseNode {
+  name: string
+  type: NodeType
+  path: string
+  expandable: boolean
+}
+
+export interface SearchHit {
+  name: string
+  type: NodeType
+  path: string
+}

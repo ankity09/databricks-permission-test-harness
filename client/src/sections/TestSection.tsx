@@ -1,8 +1,28 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { applyGrant, probe as runProbe, resetSp, revokeGrant } from '../api'
+import { CatalogExplorer } from '../components/CatalogExplorer'
 import { ConfigHeader } from '../components/ConfigHeader'
 import { ResultStage } from '../components/ResultStage'
+import { ChevronIcon } from '../components/icons'
 import { useStore } from '../store'
+import type { NodeType } from '../types'
+
+/** Map a picked node type to the best-fit default action id, when present. */
+function actionForType(type: NodeType): string | null {
+  switch (type) {
+    case 'catalog':
+      return 'uc.catalog.use'
+    case 'schema':
+      return 'uc.schema.use'
+    case 'table':
+    case 'view':
+      return 'uc.table.select'
+    case 'function':
+      return 'uc.function.execute'
+    default:
+      return null
+  }
+}
 
 function errMsg(e: unknown): string {
   if (e && typeof e === 'object' && 'response' in e) {
@@ -42,6 +62,14 @@ export function TestSection() {
   const selected = useMemo(() => actions.find((a) => a.id === actionId) ?? null, [actions, actionId])
   const canGrant = Boolean(selected && selected.grant_sql)
   const ready = Boolean(actionId && securable.trim())
+  const [explorerOpen, setExplorerOpen] = useState(true)
+
+  function onPick(path: string, type: NodeType) {
+    setSecurable(path)
+    // best-fit action auto-select, only if it exists on the current tab
+    const wanted = actionForType(type)
+    if (wanted && tabActions.some((a) => a.id === wanted)) setActionId(wanted)
+  }
 
   async function onApply() {
     if (!ready || !actionId) return
@@ -100,34 +128,64 @@ export function TestSection() {
   }
 
   return (
-    <div className="space-y-5">
-      <ConfigHeader
-        tab={tab}
-        onTab={setTab}
-        securable={securable}
-        onSecurable={setSecurable}
-        actions={tabActions}
-        actionId={actionId}
-        onAction={setActionId}
-        negativeTest={negativeTest}
-        onNegativeTest={setNegativeTest}
-        canGrant={canGrant}
-        selected={selected}
-        ready={ready}
-        busy={busy}
-        onApply={onApply}
-        onAttempt={onAttempt}
-        onRevoke={onRevoke}
-        onReset={onReset}
-      />
-      <ResultStage
-        tab={tab}
-        result={result}
-        busy={busy}
-        securable={securable}
-        actionId={actionId}
-        ready={ready}
-      />
+    <div className="flex gap-5">
+      {/* collapsible catalog explorer */}
+      {explorerOpen ? (
+        <aside className="sticky top-[73px] hidden h-[calc(100vh-96px)] w-64 shrink-0 flex-col rounded-lg border border-line bg-surface p-3 lg:flex">
+          <div className="mb-2 flex items-center gap-2">
+            <span className="h-4 w-1 rounded-full bg-lava" />
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-dim">Catalog</h3>
+            <button
+              onClick={() => setExplorerOpen(false)}
+              aria-label="Collapse catalog explorer"
+              title="Collapse"
+              className="ml-auto rounded p-0.5 text-ink-faint hover:text-ink"
+            >
+              <ChevronIcon className="h-3.5 w-3.5 rotate-180" />
+            </button>
+          </div>
+          <CatalogExplorer onPick={onPick} selectedPath={securable} />
+        </aside>
+      ) : (
+        <button
+          onClick={() => setExplorerOpen(true)}
+          aria-label="Open catalog explorer"
+          title="Open catalog explorer"
+          className="sticky top-[73px] hidden h-9 shrink-0 items-center rounded-lg border border-line bg-surface px-2 text-ink-faint hover:text-ink lg:flex"
+        >
+          <ChevronIcon className="h-3.5 w-3.5" />
+        </button>
+      )}
+
+      <div className="min-w-0 flex-1 space-y-5">
+        <ConfigHeader
+          tab={tab}
+          onTab={setTab}
+          securable={securable}
+          onSecurable={setSecurable}
+          actions={tabActions}
+          actionId={actionId}
+          onAction={setActionId}
+          negativeTest={negativeTest}
+          onNegativeTest={setNegativeTest}
+          canGrant={canGrant}
+          selected={selected}
+          ready={ready}
+          busy={busy}
+          onApply={onApply}
+          onAttempt={onAttempt}
+          onRevoke={onRevoke}
+          onReset={onReset}
+        />
+        <ResultStage
+          tab={tab}
+          result={result}
+          busy={busy}
+          securable={securable}
+          actionId={actionId}
+          ready={ready}
+        />
+      </div>
     </div>
   )
 }

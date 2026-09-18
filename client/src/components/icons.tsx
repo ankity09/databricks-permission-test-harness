@@ -76,3 +76,65 @@ export function SearchIcon({ className }: IconProps) {
     </svg>
   )
 }
+
+export function ChevronIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className={className ?? 'h-3.5 w-3.5'} aria-hidden="true">
+      <path d="m9 6 6 6-6 6" />
+    </svg>
+  )
+}
+
+/**
+ * A tiny glyph per Unity Catalog securable type. Kept intentionally simple so
+ * the tree reads at a glance without a heavy icon set.
+ */
+export function NodeGlyph({ type, className }: IconProps & { type: string }) {
+  const c = className ?? 'h-3.5 w-3.5'
+  const common = { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: '1.6', strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, className: c, 'aria-hidden': true }
+  switch (type) {
+    case 'catalog':
+      return (
+        <svg {...common}>
+          <path d="M4 7c0-1.1 3.6-2 8-2s8 .9 8 2-3.6 2-8 2-8-.9-8-2Z" />
+          <path d="M4 7v10c0 1.1 3.6 2 8 2s8-.9 8-2V7" />
+          <path d="M4 12c0 1.1 3.6 2 8 2s8-.9 8-2" />
+        </svg>
+      )
+    case 'schema':
+      return (
+        <svg {...common}>
+          <rect x="4" y="4" width="16" height="16" rx="2" />
+          <path d="M4 9h16M9 9v11" />
+        </svg>
+      )
+    case 'view':
+      return (
+        <svg {...common}>
+          <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6Z" />
+          <circle cx="12" cy="12" r="2.5" />
+        </svg>
+      )
+    case 'volume':
+      return (
+        <svg {...common}>
+          <path d="M3 6h18l-2 13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1L3 6Z" />
+          <path d="M3 6l2-2h14l2 2" />
+        </svg>
+      )
+    case 'function':
+      return (
+        <svg {...common}>
+          <path d="M8 4h-1a2 2 0 0 0-2 2v3l-2 3 2 3v3a2 2 0 0 0 2 2h1" />
+          <path d="M16 4h1a2 2 0 0 1 2 2v3l2 3-2 3v3a2 2 0 0 1-2 2h-1" />
+        </svg>
+      )
+    default: // table
+      return (
+        <svg {...common}>
+          <rect x="3" y="4" width="18" height="16" rx="2" />
+          <path d="M3 10h18M9 4v16" />
+        </svg>
+      )
+  }
+}

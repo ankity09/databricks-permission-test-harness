@@ -47,18 +47,21 @@ from app.promote import build_promote_info
 from app.models import (
     AgentChatRequest,
     ApplyRequest,
+    BrowseRequest,
     ProbeRequest,
     ProbeResult,
     PromoteInfo,
     QueryRequest,
     ScenarioRunRequest,
     ScenarioSaveRequest,
+    SearchRequest,
     SweepRequest,
 )
 from app.probe import run_probe
 from app.query import build_select, run_query_as_sp
 from app.masking import describe_governance
 from app.sweep import build_targets, run_sweep
+from app.browse import browse_node, search_objects, BrowseError
 from app.sql_guard import assert_read_only, ReadOnlyViolation
 
 
@@ -624,6 +627,25 @@ async def sweep(request: Request, body: SweepRequest):
         raw_message=result["verdict"]["status"],
     )
     return result
+
+
+@api.post("/catalog/browse")
+async def catalog_browse(request: Request, body: BrowseRequest):
+    """Lazily list children of a catalog-tree node, under the OBO admin's
+    identity. Read-only metadata (SHOW commands); nothing runs as the SP."""
+    obo_exec = _obo_row_exec(request)  # raises 401 if OBO token missing
+    try:
+        return {"nodes": browse_node(obo_exec, level=body.level, parent=body.parent)}
+    except BrowseError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@api.post("/catalog/search")
+async def catalog_search(request: Request, body: SearchRequest):
+    """Server-side name search across all catalogs the OBO admin can see
+    (system.information_schema). Read-only; nothing runs as the SP."""
+    obo_exec = _obo_row_exec(request)  # raises 401 if OBO token missing
+    return {"results": search_objects(obo_exec, query=body.query, limit=body.limit)}
 
 
 @api.post("/reset-sp")

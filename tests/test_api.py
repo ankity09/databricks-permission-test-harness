@@ -46,6 +46,16 @@ def test_me_without_obo_header_returns_401():
     assert r.status_code == 401
 
 
+def test_catalog_browse_without_obo_returns_401():
+    r = client.post("/api/catalog/browse", json={"level": "root"})
+    assert r.status_code == 401
+
+
+def test_catalog_search_without_obo_returns_401():
+    r = client.post("/api/catalog/search", json={"query": "orders"})
+    assert r.status_code == 401
+
+
 def test_promote_is_pure_and_needs_no_obo():
     r = client.post(
         "/api/promote?principal=analyst@corp.com",

@@ -2,6 +2,7 @@ import axios from 'axios'
 import type {
   ActionDescriptor,
   ActivityResponse,
+  BrowseNode,
   ChatMessage,
   MatrixResult,
   MeResponse,
@@ -10,6 +11,7 @@ import type {
   QueryResult,
   Scenario,
   ScenarioItem,
+  SearchHit,
   SweepResult,
 } from './types'
 
@@ -121,6 +123,27 @@ export async function runQuery(
 export async function runSweep(securable: string): Promise<SweepResult> {
   const { data } = await api.post<SweepResult>('/sweep', { securable })
   return data
+}
+
+// ---- v4: catalog explorer ----
+
+export async function browseCatalog(
+  level: 'root' | 'catalog' | 'schema',
+  parent?: string,
+): Promise<BrowseNode[]> {
+  const { data } = await api.post<{ nodes: BrowseNode[] }>('/catalog/browse', {
+    level,
+    parent,
+  })
+  return data.nodes
+}
+
+export async function searchCatalog(query: string, limit = 25): Promise<SearchHit[]> {
+  const { data } = await api.post<{ results: SearchHit[] }>('/catalog/search', {
+    query,
+    limit,
+  })
+  return data.results
 }
 
 export default api

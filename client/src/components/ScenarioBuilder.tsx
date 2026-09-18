@@ -1,5 +1,7 @@
-import { useMemo } from 'react'
-import type { ActionDescriptor, Scenario, ScenarioItem } from '../types'
+import { useMemo, useState } from 'react'
+import type { ActionDescriptor, NodeType, Scenario, ScenarioItem } from '../types'
+import { CatalogExplorer } from './CatalogExplorer'
+import { SearchIcon } from './icons'
 
 interface Props {
   actions: ActionDescriptor[]
@@ -38,8 +40,34 @@ export function ScenarioBuilder(props: Props) {
     [actions],
   )
 
+  const [browseRow, setBrowseRow] = useState<number | null>(null)
+
   function setItem(i: number, patch: Partial<ScenarioItem>) {
     onItems(items.map((it, idx) => (idx === i ? { ...it, ...patch } : it)))
+  }
+
+  function actionForType(type: NodeType): string | null {
+    switch (type) {
+      case 'catalog':
+        return 'uc.catalog.use'
+      case 'schema':
+        return 'uc.schema.use'
+      case 'table':
+      case 'view':
+        return 'uc.table.select'
+      case 'function':
+        return 'uc.function.execute'
+      default:
+        return null
+    }
+  }
+
+  function pickForRow(i: number, path: string, type: NodeType) {
+    const wanted = actionForType(type)
+    const patch: Partial<ScenarioItem> = { securable: path }
+    if (wanted && grantable.some((a) => a.id === wanted)) patch.action_id = wanted
+    setItem(i, patch)
+    setBrowseRow(null)
   }
   function addRow() {
     onItems([...items, { action_id: grantable[0]?.id ?? '', securable: '' }])
@@ -120,12 +148,38 @@ export function ScenarioBuilder(props: Props) {
               className="min-w-0 flex-1 rounded-md border border-line bg-base px-3 py-2 font-mono text-sm text-ink placeholder:text-ink-faint focus:border-lava focus:outline-none"
             />
             <button
-              onClick={() => removeRow(i)}
+              onClick={() => setBrowseRow(browseRow === i ? null : i)}
+              aria-label="Browse catalog for this privilege"
+              aria-expanded={browseRow === i}
+              title="Browse catalog"
+              className={
+                'rounded-md border px-2 py-2 transition-colors ' +
+                (browseRow === i
+                  ? 'border-lava bg-lava/10 text-lava'
+                  : 'border-line bg-surface text-ink-dim hover:border-ink-faint hover:text-ink')
+              }
+            >
+              <SearchIcon className="h-4 w-4" />
+            </button>
+            <button
+              onClick={() => {
+                removeRow(i)
+                if (browseRow === i) setBrowseRow(null)
+              }}
               aria-label="Remove"
               className="rounded px-2 py-1 text-ink-faint hover:text-lava"
             >
               ✕
             </button>
+            {browseRow === i && (
+              <div className="mt-2 w-full rounded-md border border-line bg-base p-2">
+                <CatalogExplorer
+                  dense
+                  selectedPath={it.securable}
+                  onPick={(path, type) => pickForRow(i, path, type)}
+                />
+              </div>
+            )}
           </div>
         ))}
         <button
