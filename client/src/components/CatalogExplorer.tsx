@@ -1,7 +1,33 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { browseCatalog, searchCatalog } from '../api'
 import type { BrowseNode, NodeType, SearchHit } from '../types'
-import { ChevronIcon, NodeGlyph, SearchIcon } from './icons'
+import { CheckIcon, ChevronIcon, CopyIcon, NodeGlyph, SearchIcon } from './icons'
+
+/** A hover-revealed button that copies a node's full path to the clipboard. */
+function CopyPathButton({ path }: { path: string }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <button
+      onClick={(e) => {
+        e.stopPropagation()
+        void navigator.clipboard.writeText(path).then(() => {
+          setCopied(true)
+          window.setTimeout(() => setCopied(false), 1200)
+        })
+      }}
+      aria-label={`Copy ${path}`}
+      title="Copy full path"
+      className={
+        'shrink-0 rounded p-1 transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-lava ' +
+        (copied
+          ? 'text-pass'
+          : 'text-ink-faint opacity-0 hover:text-ink group-hover:opacity-100 focus-visible:opacity-100')
+      }
+    >
+      {copied ? <CheckIcon className="h-3 w-3" /> : <CopyIcon className="h-3 w-3" />}
+    </button>
+  )
+}
 
 interface CatalogExplorerProps {
   /** Called when the user picks any node (leaf or container). */
@@ -114,19 +140,25 @@ export function CatalogExplorer({ onPick, selectedPath, dense }: CatalogExplorer
           ) : (
             <span className="shrink-0" style={{ marginLeft: depth * 12 + 18 }} />
           )}
-          <button
-            onClick={() => onPick(node.path, node.type)}
-            title={node.path}
+          <div
             className={
-              'group flex min-w-0 flex-1 items-center gap-1.5 rounded px-1.5 py-1 text-left text-xs transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-lava ' +
-              (isSelected
-                ? 'bg-lava/10 text-ink'
-                : 'text-ink-dim hover:bg-surface-2/60 hover:text-ink')
+              'group flex min-w-0 flex-1 items-center gap-1.5 rounded pr-1 ' +
+              (isSelected ? 'bg-lava/10' : 'hover:bg-surface-2/60')
             }
           >
-            <NodeGlyph type={node.type} className={'h-3.5 w-3.5 shrink-0 ' + (isSelected ? 'text-lava' : 'text-ink-faint')} />
-            <span className="truncate font-mono">{node.name}</span>
-          </button>
+            <button
+              onClick={() => onPick(node.path, node.type)}
+              title={node.path}
+              className={
+                'flex min-w-0 flex-1 items-center gap-1.5 rounded px-1.5 py-1 text-left text-xs transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-lava ' +
+                (isSelected ? 'text-ink' : 'text-ink-dim group-hover:text-ink')
+              }
+            >
+              <NodeGlyph type={node.type} className={'h-3.5 w-3.5 shrink-0 ' + (isSelected ? 'text-lava' : 'text-ink-faint')} />
+              <span className="truncate font-mono">{node.name}</span>
+            </button>
+            <CopyPathButton path={node.path} />
+          </div>
         </div>
         {st?.open && (
           <div>
@@ -173,19 +205,27 @@ export function CatalogExplorer({ onPick, selectedPath, dense }: CatalogExplorer
             {hits.map((h) => {
               const isSelected = selectedPath === h.path
               return (
-                <button
+                <div
                   key={h.path}
-                  onClick={() => onPick(h.path, h.type)}
-                  title={h.path}
                   className={
-                    'flex w-full min-w-0 items-center gap-1.5 rounded px-1.5 py-1 text-left text-xs transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-lava ' +
-                    (isSelected ? 'bg-lava/10 text-ink' : 'text-ink-dim hover:bg-surface-2/60 hover:text-ink')
+                    'group flex w-full min-w-0 items-center gap-1.5 rounded pr-1 ' +
+                    (isSelected ? 'bg-lava/10' : 'hover:bg-surface-2/60')
                   }
                 >
-                  <NodeGlyph type={h.type} className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
-                  <span className="truncate font-mono">{h.name}</span>
-                  <span className="ml-auto truncate pl-2 font-mono text-[10px] text-ink-faint">{h.path}</span>
-                </button>
+                  <button
+                    onClick={() => onPick(h.path, h.type)}
+                    title={h.path}
+                    className={
+                      'flex min-w-0 flex-1 items-center gap-1.5 rounded px-1.5 py-1 text-left text-xs transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-lava ' +
+                      (isSelected ? 'text-ink' : 'text-ink-dim group-hover:text-ink')
+                    }
+                  >
+                    <NodeGlyph type={h.type} className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
+                    <span className="truncate font-mono">{h.name}</span>
+                    <span className="ml-auto truncate pl-2 font-mono text-[10px] text-ink-faint">{h.path}</span>
+                  </button>
+                  <CopyPathButton path={h.path} />
+                </div>
               )
             })}
           </div>
