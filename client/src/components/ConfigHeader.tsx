@@ -55,7 +55,7 @@ export function ConfigHeader(props: ConfigHeaderProps) {
   } = props
 
   return (
-    <div className="sticky top-[57px] z-10 space-y-4 rounded-lg border border-line bg-surface/95 p-5 backdrop-blur">
+    <div className="sticky top-[57px] z-10 space-y-5 rounded-lg border border-line bg-surface/95 p-6 backdrop-blur">
       {/* mode segmented control */}
       <div className="inline-flex rounded-md border border-line bg-base p-0.5" role="tablist">
         {MODES.map((m) => {
@@ -80,14 +80,12 @@ export function ConfigHeader(props: ConfigHeaderProps) {
         })}
       </div>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <ObjectPicker tab={tab} value={securable} onChange={onSecurable} />
-        <div className="flex items-end">
-          <NegativeTestToggle value={negativeTest} onChange={onNegativeTest} />
-        </div>
-      </div>
+      {/* securable gets its own full-width row so long 3-part names never truncate */}
+      <ObjectPicker tab={tab} value={securable} onChange={onSecurable} />
 
       <ActionPicker actions={actions} selectedId={actionId} onSelect={onAction} />
+
+      <NegativeTestToggle value={negativeTest} onChange={onNegativeTest} />
 
       {!canGrant && selected && (
         <p className="rounded-md border border-line bg-base px-3 py-2 text-xs text-ink-faint">

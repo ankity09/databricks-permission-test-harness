@@ -12,7 +12,7 @@ export function ActionPicker({ actions, selectedId, onSelect }: ActionPickerProp
       <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-ink-dim">
         Action to test
       </span>
-      <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
         {actions.map((a) => {
           const active = a.id === selectedId
           const guarded = a.side_effect === 'write-guarded'
@@ -22,7 +22,7 @@ export function ActionPicker({ actions, selectedId, onSelect }: ActionPickerProp
               onClick={() => onSelect(a.id)}
               aria-pressed={active}
               className={
-                'flex items-center justify-between rounded-md border px-3 py-2 text-left text-sm transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-lava ' +
+                'flex items-center justify-between rounded-md border px-4 py-2.5 text-left text-sm transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-lava ' +
                 (active
                   ? 'border-lava bg-lava/10 text-ink'
                   : 'border-line bg-surface text-ink-dim hover:border-ink-faint hover:text-ink')

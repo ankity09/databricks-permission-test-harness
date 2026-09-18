@@ -24,7 +24,7 @@ export function ObjectPicker({ tab, value, onChange }: ObjectPickerProps) {
         onChange={(e) => onChange(e.target.value)}
         placeholder={hint}
         spellCheck={false}
-        className="w-full rounded-md border border-line bg-base px-3 py-2.5 font-mono text-sm text-ink placeholder:text-ink-faint focus:border-lava focus:outline-none focus-visible:ring-1 focus-visible:ring-lava"
+        className="w-full rounded-md border border-line bg-base px-4 py-3 font-mono text-base text-ink placeholder:text-ink-faint focus:border-lava focus:outline-none focus-visible:ring-1 focus-visible:ring-lava"
       />
     </label>
   )

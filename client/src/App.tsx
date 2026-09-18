@@ -41,7 +41,7 @@ export default function App() {
       >
         <TopBar me={me} meError={meError} />
 
-        <main className="mx-auto max-w-6xl px-6 py-6">
+        <main className="mx-auto max-w-[1680px] px-8 py-8">
           {section === 'home' && <HomeSection me={me} meError={meError} />}
           {section === 'test' && <TestSection />}
           {section === 'scenarios' && <ScenariosTab />}
