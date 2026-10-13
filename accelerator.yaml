@@ -1,0 +1,45 @@
+# =============================================================================
+# accelerator.yaml: Permission Test Harness
+#
+# The one file you review before anything is deployed. Genie Code (or you)
+# fills in the empty values; `python scripts/provision.py provision` writes the
+# resolved ones (endpoint, base model, gateway URL) back into this file and
+# keeps these comments. See DEPLOY.md.
+# =============================================================================
+
+metadata:
+  name: "permission-test-harness"
+  title: "Permission Test Harness: test a grant on the app's service principal before granting it to a person"
+  customer: ""
+  owner: ""                         # who owns this deployment on your side
+
+target:
+  warehouse_id: ""                  # REQUIRED: serverless SQL warehouse for probes, grants, and revokes
+  app_name: "permission-test-harness"
+
+harness:
+  allowed_group: ""                 # workspace group allowed to use the app; empty = anyone with CAN_USE on the app
+
+  lakebase:                         # stores the activity log and saved scenarios
+    project: "perm-harness-lakebase"  # created by `provision` if it does not exist
+    branch: "production"
+    endpoint: ""                    # resolved by `provision` (usually "primary")
+    database: "databricks_postgres"
+    schema: "perm_harness"          # Postgres schema the app creates on first start
+
+  agent:                            # optional chat assistant, served through Unity AI Gateway
+    enabled: true                   # false = no agent; everything else still works
+    model_catalog: ""               # REQUIRED when enabled: a catalog where you can create a schema
+    model_schema: "perm_harness"
+    model_service: "harness_agent"
+    base_model: ""                  # system.ai chat model to route to; `provision` picks one if empty
+    uaig_base_url: ""               # resolved by `provision`
+
+features:
+  required:
+    - unity_catalog
+    - serverless_sql
+    - user_authorization            # user authorization for Databricks Apps (Public Preview), enabled by a workspace admin
+    - lakebase_autoscaling
+  optional:
+    - unity_ai_gateway              # only for the agent

@@ -1,0 +1,41 @@
+# Databricks Apps runtime config.
+#
+# Deployment paths:
+#   * Bundle deploy: values from databricks.yml (config.env section)
+#   * Genie Code deploy-app (workspace): values from accelerator.yaml resolved at deploy time
+#
+# OBO (on-behalf-of) for user-authorization:
+#   * The end-user OAuth token is forwarded in the `x-forwarded-access-token` header.
+#   * The app SP credential is auto-injected as DATABRICKS_CLIENT_ID / DATABRICKS_CLIENT_SECRET.
+#   * User authorization requires workspace-admin enablement (Public Preview).
+
+command:
+  # Wrap in a shell so ${DATABRICKS_APP_PORT} expands (argv form runs no shell).
+  - sh
+  - -c
+  - exec uvicorn app.main:app --host 0.0.0.0 --port ${DATABRICKS_APP_PORT:-8000}
+
+env:
+  # SQL warehouse for probes + grant/revoke statements.
+  - name: HARNESS_WAREHOUSE_ID
+    valueFrom: sql-warehouse
+
+  # Lakebase endpoint URL for activity log / scenarios. Auto-resolved from the lakebase resource.
+  - name: LAKEBASE_ENDPOINT
+    valueFrom: lakebase
+
+  # Schema within databricks_postgres database (fixed).
+  - name: HARNESS_DB_SCHEMA
+    value: perm_harness
+
+  # Unity AI Gateway base URL (optional; empty disables agent). Set by accelerator.yaml or --var.
+  - name: UAIG_BASE_URL
+    value: ""
+
+  # Model service name in UC (optional; empty disables agent). Set by accelerator.yaml or --var.
+  - name: UAIG_MODEL_SERVICE
+    value: ""
+
+  # Group name for CAN_USE grant (optional; empty means rely on app CAN_USE only).
+  - name: HARNESS_ALLOWED_GROUP
+    value: ""

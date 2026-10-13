@@ -1,0 +1,942 @@
+"""FastAPI entry point for the Permission Test Harness.
+
+Endpoints (all under /api):
+  GET  /health         liveness
+  GET  /actions        the action catalog, grouped by tab
+  GET  /me             admin identity (from OBO token) + configured SP id.
+                       Doubles as the OBO verification endpoint: if this
+                       resolves the admin identity, OBO is wired correctly.
+  POST /grant/apply    apply a candidate grant onto the app SP (OBO-signed)
+  POST /grant/revoke   revoke it from the app SP (OBO-signed)
+  POST /probe          SP attempts the action; returns pass/fail_denied/...
+  POST /promote        non-mutating: validated GRANT SQL + UC deep-link
+  POST /reset-sp       best-effort: revoke all app-applied test grants
+
+Identity rules:
+  * grant/revoke are executed under the OBO ADMIN client (admin authority).
+  * probes execute under the app SP client.
+  * the ONLY principal ever written to is the configured app SP.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import os
+from contextlib import asynccontextmanager
+from typing import Any, Callable
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.staticfiles import StaticFiles
+
+from app import activity as activity_mod
+from app import agent as agent_mod
+from app import db as db_mod
+from app import scenarios as scen_mod
+from app import uaig as uaig_mod
+from app.catalog import SecurableLevelError, load_catalog, validate_securable
+from app.config import get_settings
+from app.grant import ForbiddenPrincipalError, ForbiddenSecurableError, apply_to_sp, revoke_from_sp, sp_holds_directly
+from app.identity import (
+    get_obo_client,
+    get_obo_identity,
+    get_obo_token,
+    get_sp_client,
+    get_sp_identity,
+    require_tester,
+)
+from app.promote import build_promote_info, PrincipalValidationError
+from app.models import (
+    AgentChatRequest,
+    ApplyRequest,
+    BrowseRequest,
+    ProbeRequest,
+    ProbeResult,
+    PromoteInfo,
+    QueryRequest,
+    ScenarioRunRequest,
+    ScenarioSaveRequest,
+    SearchRequest,
+    SqlCheckRequest,
+    SqlCheckResult,
+    SweepRequest,
+)
+from app.probe import run_probe
+from app.query import build_select, run_query_as_sp
+from app.masking import describe_governance
+from app.sweep import build_targets, run_sweep
+from app.browse import browse_node, search_objects, BrowseError
+from app.sql_guard import assert_read_only, ReadOnlyViolation
+from app.sql_check import SqlCheckRejected, check_as_sp as check_sql_as_sp_impl, classify as classify_sql
+
+
+@asynccontextmanager
+async def _lifespan(_app):
+    # Init the Lakebase pool without ever blocking boot (graceful lifespan).
+    try:
+        db_mod.init_pool(db_mod.get_state())
+        pool = db_mod.get_pool()
+        if pool is not None:
+            with pool.connection() as conn:
+                schema = get_settings().db_schema
+                db_mod.ensure_schema(conn, schema)
+    except Exception:  # noqa: BLE001
+        pass
+    yield
+    db_mod.close_pool()
+
+
+app = FastAPI(title="Permission Test Harness", lifespan=_lifespan)
+api = FastAPI()
+app.mount("/api", api)
+
+
+@contextlib.contextmanager
+def _conn_factory():
+    """Borrow a pooled Lakebase connection. Raises if the pool is unavailable."""
+    pool = db_mod.get_pool()
+    if pool is None:
+        raise RuntimeError(db_mod.get_state().error or "no db pool")
+    with pool.connection() as conn:
+        yield conn
+
+
+def _log_event(request, *, event_type, action_id, securable, verdict=None, raw_message=""):
+    """Best-effort telemetry write. NEVER raises into the request path."""
+    try:
+        admin = get_obo_identity(request)
+        admin_email = admin.get("user_name") or ""
+    except Exception:  # noqa: BLE001
+        admin_email = ""
+    try:
+        activity_mod.log_event(
+            conn_factory=_conn_factory,
+            schema=get_settings().db_schema,
+            session_id=request.headers.get("x-session-id", "adhoc"),
+            admin_email=admin_email,
+            sp_id=get_settings().sp_application_id,
+            event_type=event_type,
+            action_id=action_id,
+            securable=securable,
+            verdict=verdict,
+            raw_message=raw_message,
+        )
+    except Exception:  # noqa: BLE001 -- telemetry must not break the loop
+        pass
+
+# in-session record of what this app has applied to the SP (best-effort cleanup)
+_APPLIED: list[dict] = []
+# (action_id, securable) the SP held before a test: never revoked by the app
+_PREEXISTING: set[tuple[str, str]] = set()
+
+
+def _configured_sp() -> str:
+    sp = get_settings().sp_application_id
+    if not sp:
+        raise HTTPException(
+            status_code=500,
+            detail="App service principal id not configured (DATABRICKS_CLIENT_ID).",
+        )
+    return sp
+
+
+def _obo_sql_executor(request: Request) -> Callable[[str], Any]:
+    """Return an executor that runs SQL under the OBO ADMIN client.
+
+    Grants only succeed because the admin has authority: the SP never does.
+    """
+    client = get_obo_client(request)
+    warehouse_id = get_settings().warehouse_id
+
+    def _exec(sql: str) -> Any:
+        resp = client.statement_execution.execute_statement(
+            statement=sql,
+            warehouse_id=warehouse_id,
+            wait_timeout="30s",
+        )
+        status = getattr(resp, "status", None)
+        state = getattr(status, "state", None)
+        state_str = getattr(state, "value", str(state)) if state is not None else ""
+        if state_str and state_str.upper() != "SUCCEEDED":
+            err = getattr(status, "error", None)
+            msg = getattr(err, "message", str(err)) if err else f"state={state_str}"
+            raise RuntimeError(msg)
+        return resp
+
+    return _exec
+
+
+@api.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
+@api.get("/actions")
+async def actions():
+    catalog = load_catalog()
+
+    # Infer securable level from grant SQL template
+    _LEVEL_MAP = {
+        "CATALOG": "catalog",
+        "SCHEMA": "schema",
+        "TABLE": "table",
+        "VOLUME": "volume",
+        "FUNCTION": "function",
+        "MODEL": "model",
+    }
+
+    def get_securable_level(descriptor) -> str | None:
+        """Infer securable level from grant SQL template."""
+        tokens = descriptor.grant_sql.upper().split()
+        if "ON" not in tokens:
+            return None
+        idx = tokens.index("ON")
+        if idx + 1 < len(tokens):
+            kind = tokens[idx + 1]
+            return _LEVEL_MAP.get(kind)
+        return None
+
+    result = []
+    for d in catalog.values():
+        item = d.model_dump()
+        item["securable_level"] = get_securable_level(d)
+        result.append(item)
+
+    return result
+
+
+
+@api.get("/activity")
+async def get_activity(
+    request: Request,
+    admin_email: str | None = None,
+    verdict: str | None = None,
+    securable: str | None = None,
+    scenario_id: str | None = None,
+    limit: int = 100,
+):
+    require_tester(request)
+    try:
+        events = activity_mod.read_events(
+            conn_factory=_conn_factory,
+            schema=get_settings().db_schema,
+            admin_email=admin_email,
+            verdict=verdict,
+            securable=securable,
+            scenario_id=scenario_id,
+            limit=limit,
+        )
+    except Exception:  # noqa: BLE001
+        events = []
+    return {"events": events, "db": db_mod.healthcheck()}
+
+
+@api.get("/me")
+async def me(request: Request):
+    """Admin identity from OBO + configured SP. OBO verification endpoint."""
+    admin = get_obo_identity(request)  # raises 401 if OBO token missing
+    try:
+        sp = get_sp_identity()
+    except Exception as exc:  # noqa: BLE001
+        sp = {"error": str(exc)}
+
+    # Check authorization: allow non-members to see authorized=false instead of 403.
+    settings = get_settings()
+    authorized = True
+    if settings.allowed_group:
+        from app.identity import _get_caller_groups
+        groups = _get_caller_groups(request)
+        authorized = settings.allowed_group.lower() in groups
+
+    # Check feature availability.
+    features = {
+        "agent": bool(settings.uaig_base_url and settings.uaig_model_service),
+        "lakebase": db_mod.get_pool() is not None,
+    }
+
+    return {
+        "admin": admin,
+        "app_sp": sp,
+        "configured_sp_application_id": get_settings().sp_application_id,
+        "obo": "ok",
+        "authorized": authorized,
+        "allowed_group": settings.allowed_group or None,
+        "features": features,
+    }
+
+
+@api.post("/grant/apply")
+async def grant_apply(request: Request, body: ApplyRequest):
+    catalog = load_catalog()
+    descriptor = catalog.get(body.action_id)
+    if descriptor is None:
+        raise HTTPException(404, f"Unknown action: {body.action_id}")
+    if not descriptor.grant_sql:
+        raise HTTPException(
+            400,
+            f"Action {body.action_id} has no grant SQL (workspace ACLs are set "
+            "in the workspace UI, not via GRANT).",
+        )
+    try:
+        validate_securable(descriptor, body.securable)
+    except SecurableLevelError as exc:
+        raise HTTPException(400, str(exc))
+    require_tester(request)
+    executor = _obo_sql_executor(request)  # raises 401 if OBO token missing
+    sp = _configured_sp()
+    key = (body.action_id, body.securable)
+    if sp_holds_directly(descriptor.grant_sql, securable=body.securable, sp=sp, row_exec=_lazy_row_exec(request)):
+        _PREEXISTING.add(key)
+        _log_event(request, event_type="apply", action_id=body.action_id, securable=body.securable,
+                   verdict="already_held", raw_message="The app SP already held this grant; nothing was granted.")
+        return {"status": "already_held", "action_id": body.action_id, "securable": body.securable}
+    _PREEXISTING.discard(key)
+    try:
+        apply_to_sp(
+            descriptor.grant_sql,
+            principal=sp,
+            configured_sp=sp,
+            executor=executor,
+            securable=body.securable,
+        )
+    except ForbiddenSecurableError as exc:
+        raise HTTPException(400, str(exc))
+    except ForbiddenPrincipalError as exc:
+        raise HTTPException(403, str(exc))
+    except Exception as exc:  # noqa: BLE001 -- surface grant-authority errors
+        raise HTTPException(422, f"Grant failed: {exc}")
+    _APPLIED.append({"action_id": body.action_id, "securable": body.securable})
+    _log_event(request, event_type="apply", action_id=body.action_id, securable=body.securable)
+    return {"status": "applied", "action_id": body.action_id, "securable": body.securable}
+
+
+@api.post("/grant/revoke")
+async def grant_revoke(request: Request, body: ApplyRequest):
+    catalog = load_catalog()
+    descriptor = catalog.get(body.action_id)
+    if descriptor is None:
+        raise HTTPException(404, f"Unknown action: {body.action_id}")
+    if not descriptor.revoke_sql:
+        raise HTTPException(400, f"Action {body.action_id} has no revoke SQL.")
+    try:
+        validate_securable(descriptor, body.securable)
+    except SecurableLevelError as exc:
+        raise HTTPException(400, str(exc))
+    require_tester(request)
+    if (body.action_id, body.securable) in _PREEXISTING:
+        raise HTTPException(
+            409,
+            "The app SP held this grant before your test, so the harness won't revoke it. "
+            "Revoke it in Unity Catalog if you mean to.",
+        )
+    executor = _obo_sql_executor(request)  # raises 401 if OBO token missing
+    sp = _configured_sp()
+    try:
+        revoke_from_sp(
+            descriptor.revoke_sql,
+            principal=sp,
+            configured_sp=sp,
+            executor=executor,
+            securable=body.securable,
+        )
+    except ForbiddenSecurableError as exc:
+        raise HTTPException(400, str(exc))
+    except ForbiddenPrincipalError as exc:
+        raise HTTPException(403, str(exc))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(422, f"Revoke failed: {exc}")
+    _APPLIED[:] = [
+        a for a in _APPLIED
+        if not (a["action_id"] == body.action_id and a["securable"] == body.securable)
+    ]
+    _log_event(request, event_type="revoke", action_id=body.action_id, securable=body.securable)
+    return {"status": "revoked", "action_id": body.action_id, "securable": body.securable}
+
+
+@api.post("/probe", response_model=ProbeResult)
+async def probe(request: Request, body: ProbeRequest):
+    require_tester(request)
+    catalog = load_catalog()
+    descriptor = catalog.get(body.action_id)
+    if descriptor is None:
+        raise HTTPException(404, f"Unknown action: {body.action_id}")
+    sp_client = get_sp_client()
+    outcome = run_probe(
+        descriptor,
+        securable=body.securable,
+        sp_client=sp_client,
+        warehouse_id=get_settings().warehouse_id,
+        really_do=body.really_do,
+        negative=body.negative_test,
+    )
+    _log_event(
+        request,
+        event_type="probe",
+        action_id=body.action_id,
+        securable=body.securable,
+        verdict=outcome.status,
+        raw_message=outcome.raw_error,
+    )
+    return ProbeResult(
+        status=outcome.status,
+        detail=outcome.detail,
+        raw_error=outcome.raw_error,
+        rows=outcome.rows,
+    )
+
+
+@api.post("/promote", response_model=PromoteInfo)
+async def promote(request: Request, body: ApplyRequest, principal: str):
+    require_tester(request)
+    from app.promote import build_promote_info
+
+    catalog = load_catalog()
+    if body.action_id not in catalog:
+        raise HTTPException(404, f"Unknown action: {body.action_id}")
+    try:
+        info = build_promote_info(
+            action_id=body.action_id,
+            securable=body.securable,
+            principal=principal,
+            host=get_settings().workspace_host,
+            catalog=catalog,
+        )
+    except PrincipalValidationError as exc:
+        raise HTTPException(400, str(exc))
+    _log_event(request, event_type="promote_viewed", action_id=body.action_id, securable=body.securable)
+    return info
+
+
+@api.get("/scenarios")
+async def list_scenarios_ep(request: Request):
+    require_tester(request)
+    seed = [
+        {**s, "id": f"seed:{s['name']}", "is_seed": True}
+        for s in scen_mod.load_seed_scenarios()
+    ]
+    custom = []
+    try:
+        custom = scen_mod.list_scenarios(
+            conn_factory=_conn_factory, schema=get_settings().db_schema
+        )
+    except Exception:  # noqa: BLE001 -- degrade gracefully when DB is down
+        pass
+    return {"scenarios": seed + custom}
+
+
+@api.post("/scenarios")
+async def save_scenario_ep(request: Request, body: ScenarioSaveRequest):
+    require_tester(request)
+    try:
+        admin = get_obo_identity(request)
+    except HTTPException:
+        raise
+    except Exception:  # noqa: BLE001
+        raise HTTPException(401, "OBO required to save scenarios")
+    sid = scen_mod.save_scenario(
+        conn_factory=_conn_factory,
+        schema=get_settings().db_schema,
+        name=body.name,
+        description=body.description,
+        created_by=admin.get("user_name", ""),
+        items=[i.model_dump() for i in body.items],
+    )
+    return {"id": sid}
+
+
+@api.post("/scenarios/run")
+async def run_scenario_ep(request: Request, body: ScenarioRunRequest):
+    require_tester(request)
+    catalog = load_catalog()
+    items = [i.model_dump() for i in body.items]
+
+    # Pre-validate all items before any apply/revoke operations.
+    try:
+        scen_mod.validate_scenario_items(items, catalog)
+    except scen_mod.ValidationError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": exc.message,
+                "row": exc.row,
+                "action_id": exc.action_id,
+                "securable": exc.securable,
+            },
+        )
+
+    executor = _obo_sql_executor(request)  # raises 401 if no OBO token
+    sp = _configured_sp()
+    sp_client = get_sp_client()
+    wid = get_settings().warehouse_id
+
+    row_exec = _lazy_row_exec(request)
+
+    def apply_fn(action_id, securable):
+        d = catalog[action_id]
+        validate_securable(d, securable)
+        if sp_holds_directly(d.grant_sql, securable=securable, sp=sp, row_exec=row_exec):
+            _log_event(request, event_type="apply", action_id=action_id, securable=securable,
+                       verdict="already_held", raw_message="The app SP already held this grant; nothing was granted.")
+            return False
+        apply_to_sp(
+            d.grant_sql, principal=sp, configured_sp=sp,
+            executor=executor, securable=securable,
+        )
+        _log_event(request, event_type="apply", action_id=action_id, securable=securable)
+        return True
+
+    def probe_fn(action_id, securable):
+        d = catalog[action_id]
+        outcome = run_probe(d, securable=securable, sp_client=sp_client, warehouse_id=wid)
+        _log_event(
+            request, event_type="probe", action_id=action_id, securable=securable,
+            verdict=outcome.status, raw_message=outcome.raw_error,
+        )
+        return {"status": outcome.status, "detail": outcome.detail}
+
+    def revoke_fn(action_id, securable):
+        d = catalog[action_id]
+        revoke_from_sp(
+            d.revoke_sql, principal=sp, configured_sp=sp,
+            executor=executor, securable=securable,
+        )
+        _log_event(request, event_type="revoke", action_id=action_id, securable=securable)
+
+    # Execute the scenario. If apply fails mid-batch, catch and return 422 with
+    # the list of items that were applied (so caller knows what to revoke manually).
+    revoked_list = []
+    try:
+        return scen_mod.run_scenario(
+            items,
+            apply_fn=apply_fn, probe_fn=probe_fn, revoke_fn=revoke_fn,
+        )
+    except Exception as exc:
+        # An apply or other operation failed. The finally block in run_scenario
+        # has already attempted to revoke all applied items. Return 422 with the
+        # detail + revoked list.
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": f"Execution failed: {exc}",
+                "row": -1,
+                "action_id": "",
+                "securable": "",
+                "revoked": revoked_list,
+            },
+        )
+
+
+# module-level indirection so tests can monkeypatch the model call
+_agent_call_model = uaig_mod.call_model
+
+_AGENT_SYSTEM_PROMPT = (
+    "You are the Permission Test Harness assistant. Help the user understand "
+    "Unity Catalog permissions and drive the harness. You can run tests on the "
+    "app service principal and read history. You can NEVER grant access to a "
+    "real user or group; when a test passes, use get_promotion_directions to "
+    "give the user steps to promote it in Unity Catalog. Be concise."
+)
+
+
+def _guard_agent_sql(a: dict) -> str:
+    """Resolve the agent's run_query_as_sp args to a read-only-guarded SQL string.
+
+    Free-text SQL from the model is run through the SAME read-only guard as the
+    API, so the agent path can never execute a mutation even if the model emits
+    one. A table name goes through the guided SELECT builder.
+    """
+    if a.get("sql"):
+        assert_read_only(a["sql"])
+        return a["sql"]
+    return build_select(a["table"], int(a.get("limit", 50)))
+
+
+@api.post("/agent/chat")
+async def agent_chat(request: Request, body: AgentChatRequest):
+    require_tester(request)
+    settings = get_settings()
+    if not settings.uaig_base_url or not settings.uaig_model_service:
+        raise HTTPException(
+            503,
+            "Agent not configured: set UAIG_BASE_URL and UAIG_MODEL_SERVICE."
+        )
+    token = get_obo_token(request)  # 401 if missing
+    catalog = load_catalog()
+    sp = _configured_sp()
+    wid = settings.warehouse_id
+    # OBO executor and SP client are built lazily: constructing them needs live
+    # host/SP creds, which are absent in unit tests where no grant/probe tool
+    # actually fires (e.g. the model answers without a tool call).
+    _boxes: dict = {}
+
+    def executor(sql):
+        if "exec" not in _boxes:
+            _boxes["exec"] = _obo_sql_executor(request)
+        return _boxes["exec"](sql)
+
+    def sp_client():
+        if "c" not in _boxes:
+            _boxes["c"] = get_sp_client()
+        return _boxes["c"]
+
+    def _single_test(args):
+        d = catalog[args["action_id"]]
+        validate_securable(d, args["securable"])
+        held = sp_holds_directly(d.grant_sql, securable=args["securable"], sp=sp, row_exec=_lazy_row_exec(request))
+        if not held:
+            apply_to_sp(
+                d.grant_sql, principal=sp, configured_sp=sp,
+                executor=executor, securable=args["securable"],
+            )
+            _log_event(request, event_type="apply", action_id=args["action_id"], securable=args["securable"])
+        try:
+            outcome = run_probe(d, securable=args["securable"], sp_client=sp_client(), warehouse_id=wid)
+            _log_event(
+                request, event_type="probe", action_id=args["action_id"], securable=args["securable"],
+                verdict=outcome.status, raw_message=outcome.raw_error,
+            )
+            return {"status": outcome.status, "detail": outcome.detail, "raw_error": outcome.raw_error,
+                    "already_held": held}
+        finally:
+            if not held:
+                revoke_from_sp(
+                    d.revoke_sql, principal=sp, configured_sp=sp,
+                    executor=executor, securable=args["securable"],
+                )
+                _log_event(request, event_type="revoke", action_id=args["action_id"], securable=args["securable"])
+
+    def _run_scenario(args):
+        return scen_mod.run_scenario(
+            args["items"],
+            apply_fn=lambda ai, se: apply_to_sp(
+                catalog[ai].grant_sql, principal=sp, configured_sp=sp, executor=executor, securable=se),
+            probe_fn=lambda ai, se: {
+                "status": run_probe(catalog[ai], securable=se, sp_client=sp_client(), warehouse_id=wid).status},
+            revoke_fn=lambda ai, se: revoke_from_sp(
+                catalog[ai].revoke_sql, principal=sp, configured_sp=sp, executor=executor, securable=se),
+        )
+
+    def _agent_sql_check(a):
+        try:
+            return check_sql_as_sp_impl(
+                a.get("sql", ""), sp_client=sp_client(), warehouse_id=get_settings().warehouse_id,
+                uc_access=_uc_access(), sp=_configured_sp(),
+            )
+        except SqlCheckRejected as exc:
+            return {"error": str(exc)}
+
+    handlers = {
+        "read_activity": lambda a: {"events": _safe_read_activity(a)},
+        "read_catalog": lambda a: {"actions": [d.model_dump() for d in catalog.values()]},
+        "check_effective_permissions": lambda a: {
+            "note": "Use run_single_test for a live pass/fail check of the SP's access."},
+        "run_single_test": _single_test,
+        "list_scenarios": lambda a: {"scenarios": scen_mod.load_seed_scenarios()},
+        "save_scenario": lambda a: {
+            "note": "Saving custom scenarios is done from the Scenarios tab in this build."},
+        "run_scenario": _run_scenario,
+        "get_promotion_directions": lambda a: build_promote_info(
+            action_id=a["action_id"], securable=a["securable"],
+            principal=a.get("principal", "<user-or-group>"),
+            host=get_settings().workspace_host, catalog=catalog,
+        ).model_dump(),
+        "check_sql_as_sp": _agent_sql_check,
+        "run_query_as_sp": lambda a: run_query_as_sp(
+            _guard_agent_sql(a),
+            sp_client=sp_client(), warehouse_id=wid, limit=int(a.get("limit", 50)),
+        ),
+        "run_reach_sweep": lambda a: run_sweep(
+            build_targets(_obo_row_exec(request), a["securable"]),
+            sp_client=sp_client(), warehouse_id=wid,
+        ),
+    }
+
+    def _dispatch(name, args):
+        return agent_mod.dispatch(name, args, handlers=handlers)
+
+    # Resolve the model call at request time so tests can monkeypatch it.
+    import sys
+
+    def call_model(msgs, tools):
+        fn = getattr(sys.modules[__name__], "_agent_call_model")
+        return fn(msgs, tools, token=token)
+
+    try:
+        return agent_mod.run_chat(
+            messages=[{"role": "system", "content": _AGENT_SYSTEM_PROMPT}] + body.messages,
+            tools=agent_mod.tool_schema(),
+            call_model=call_model,
+            dispatch=_dispatch,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- show gateway errors (scope, quota, routing) to the user
+        raise HTTPException(502, f"The assistant call failed: {exc}") from exc
+
+
+def _safe_read_activity(a):
+    try:
+        return activity_mod.read_events(
+            conn_factory=_conn_factory, schema=get_settings().db_schema,
+            verdict=a.get("verdict"), securable=a.get("securable"),
+            limit=int(a.get("limit", 20)),
+        )
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _lazy_row_exec(request: Request):
+    """Like _obo_row_exec, but builds the admin client on first use.
+
+    Lookups that are allowed to fail (such as "does the SP already hold this
+    grant?") pass this to code that treats any error as "unknown".
+    """
+    box: dict = {}
+
+    def _exec(sql: str):
+        if "fn" not in box:
+            box["fn"] = _obo_row_exec(request)
+        return box["fn"](sql)
+
+    return _exec
+
+
+def _obo_row_exec(request: Request):
+    """Return an exec(sql)->list[dict] that runs under the OBO admin client.
+
+    Used for read-only metadata lookups (masking annotations, sweep target
+    enumeration) that the logged-in admin is entitled to perform.
+    """
+    client = get_obo_client(request)  # raises 401 if OBO token missing
+    warehouse_id = get_settings().warehouse_id
+
+    def _exec(sql: str):
+        resp = client.statement_execution.execute_statement(
+            statement=sql, warehouse_id=warehouse_id, wait_timeout="30s"
+        )
+        result = getattr(resp, "result", None)
+        data = getattr(result, "data_array", None) if result else None
+        manifest = getattr(resp, "manifest", None)
+        schema = getattr(manifest, "schema", None)
+        cols = [getattr(c, "name", "") for c in (getattr(schema, "columns", None) or [])]
+        rows = []
+        for row in data or []:
+            rows.append(dict(zip(cols, row)) if cols else {"col": row})
+        return rows
+
+    return _exec
+
+
+@api.post("/query")
+async def query(request: Request, body: QueryRequest):
+    """Run a read-only query AS THE APP SP and return rows + mask annotations.
+
+    Free-text SQL is read-only enforced (400 on violation) BEFORE any client is
+    built, so a blocked statement never reaches the SP. The guided path builds
+    its own SELECT from a table name and never accepts user SQL. Table names
+    are validated via the securable parser; if invalid, mask annotations are
+    skipped but no error is raised.
+    """
+    if body.sql:
+        try:
+            assert_read_only(body.sql)
+        except ReadOnlyViolation as exc:
+            raise HTTPException(400, str(exc))
+        sql = body.sql
+        table = body.table
+    elif body.table:
+        try:
+            sql = build_select(body.table, body.limit)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        table = body.table
+    else:
+        raise HTTPException(400, "Provide either 'sql' (read-only) or 'table'.")
+
+    # Validate table name if provided (for mask annotations in free-text path).
+    # Invalid table names skip annotations but do not error.
+    if table:
+        from app.securable import parse_securable, SecurableParseError
+        try:
+            parse_securable(table)
+        except SecurableParseError:
+            table = None
+
+    # Check authorization after validation.
+    require_tester(request)
+    # OBO required (for identity/parity + the masking metadata read); check the
+    # token BEFORE building any client so a missing token -> 401, not 500.
+    get_obo_token(request)
+    sp_client = get_sp_client()
+    result = run_query_as_sp(
+        sql, sp_client=sp_client, warehouse_id=get_settings().warehouse_id, limit=body.limit
+    )
+
+    # Mask annotations for single-table queries only (guided path, or a
+    # free-text query the caller tagged with a table). Best-effort; never fatal.
+    governance = {"masked_columns": [], "row_filter": False, "detail": ""}
+    if table:
+        try:
+            governance = describe_governance(_obo_row_exec(request), table)
+        except Exception:  # noqa: BLE001
+            pass
+
+    _log_event(
+        request, event_type="query",
+        action_id="uc.query.run", securable=table or "(free-text)",
+        verdict="pass" if not result.get("error") else "fail_denied",
+        raw_message=result.get("error") or "",
+    )
+    return {**result, "governance": governance}
+
+
+def _uc_access():
+    """Effective privileges and owner of a securable for the app SP, read by the SP itself.
+
+    The SP reads its own effective permissions with its own credentials, so the
+    app needs no extra user scope for this. It only reads metadata.
+    """
+    w = get_sp_client()
+    sp = _configured_sp()
+    getters = {"table": w.tables.get, "schema": w.schemas.get, "catalog": w.catalogs.get}
+
+    def access(securable_type: str, full_name: str):
+        held, token = set(), None
+        while True:
+            page = w.grants.get_effective(
+                securable_type=securable_type, full_name=full_name, principal=sp,
+                max_results=0, page_token=token,
+            )
+            for assignment in page.privilege_assignments or []:
+                for p in assignment.privileges or []:
+                    if p.privilege is not None:
+                        held.add(str(getattr(p.privilege, "value", p.privilege)))
+            token = page.next_page_token
+            if not token:
+                break
+        return held, getattr(getters[securable_type](full_name), "owner", None)
+
+    return access
+
+
+@api.post("/sql/check", response_model=SqlCheckResult)
+async def sql_check(request: Request, body: SqlCheckRequest):
+    """Check one SQL statement as the app SP without changing anything.
+
+    Read-only statements run and return rows (with mask annotations when
+    ``table`` names a 3-part table). Any other statement is sent only as
+    EXPLAIN, so Unity Catalog checks its privileges without running it.
+    400 for grants, ownership changes, session commands, and multiple
+    statements.
+    """
+    require_tester(request)
+    try:
+        info = classify_sql(body.sql)
+    except SqlCheckRejected as exc:
+        raise HTTPException(400, str(exc))
+
+    result = check_sql_as_sp_impl(
+        body.sql, sp_client=get_sp_client(), warehouse_id=get_settings().warehouse_id,
+        uc_access=_uc_access(), sp=_configured_sp(),
+    )
+
+    table = None
+    if body.table:
+        from app.securable import SecurableParseError, parse_securable
+        try:
+            if len(parse_securable(body.table)) == 3:
+                table = body.table
+        except SecurableParseError:
+            table = None
+
+    governance = {"masked_columns": [], "row_filter": False, "detail": ""}
+    if table and info["kind"] == "read" and result["verdict"] == "allowed":
+        try:
+            governance = describe_governance(_obo_row_exec(request), table)
+        except Exception:  # noqa: BLE001 -- annotations are best-effort
+            pass
+
+    _log_event(
+        request,
+        event_type="sql_check",
+        action_id="uc.sql.check",
+        securable=table or "(free-text)",
+        verdict={"allowed": "pass", "denied": "fail_denied"}.get(result["verdict"], result["verdict"]),
+        raw_message=f"{result['statement_kind']}: {result['message']}"[:2000],
+    )
+    return SqlCheckResult(**result, governance=governance)
+
+
+@api.post("/sweep")
+async def sweep(request: Request, body: SweepRequest):
+    """Adversarial read-only reach sweep: enumerate adjacent objects (OBO),
+    attempt harmless reads as the SP, return a boundary matrix."""
+    require_tester(request)
+    obo_exec = _obo_row_exec(request)  # raises 401 if OBO token missing
+    sp_client = get_sp_client()
+    targets = build_targets(obo_exec, body.securable)
+    result = run_sweep(
+        targets, sp_client=sp_client, warehouse_id=get_settings().warehouse_id
+    )
+    _log_event(
+        request, event_type="sweep",
+        action_id="uc.sweep.reach", securable=body.securable,
+        verdict="pass" if result["verdict"]["holes"] == 0 else "fail_denied",
+        raw_message=result["verdict"]["status"],
+    )
+    return result
+
+
+@api.post("/catalog/browse")
+async def catalog_browse(request: Request, body: BrowseRequest):
+    """Lazily list children of a catalog-tree node, under the OBO admin's
+    identity. Read-only metadata (SHOW commands); nothing runs as the SP."""
+    require_tester(request)
+    obo_exec = _obo_row_exec(request)  # raises 401 if OBO token missing
+    try:
+        return {"nodes": browse_node(obo_exec, level=body.level, parent=body.parent)}
+    except BrowseError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@api.post("/catalog/search")
+async def catalog_search(request: Request, body: SearchRequest):
+    """Server-side name search across all catalogs the OBO admin can see
+    (system.information_schema). Read-only; nothing runs as the SP."""
+    require_tester(request)
+    obo_exec = _obo_row_exec(request)  # raises 401 if OBO token missing
+    return {"results": search_objects(obo_exec, query=body.query, limit=body.limit)}
+
+
+@api.post("/reset-sp")
+async def reset_sp(request: Request):
+    """Best-effort: revoke all grants this app applied to the SP this session."""
+    require_tester(request)
+    catalog = load_catalog()
+    executor = _obo_sql_executor(request)  # raises 401 if OBO token missing
+    sp = _configured_sp()
+    revoked, errors = [], []
+    for applied in list(_APPLIED):
+        d = catalog.get(applied["action_id"])
+        if not d or not d.revoke_sql:
+            continue
+        try:
+            revoke_from_sp(
+                d.revoke_sql,
+                principal=sp,
+                configured_sp=sp,
+                executor=executor,
+                securable=applied["securable"],
+            )
+            revoked.append(applied)
+        except Exception as exc:  # noqa: BLE001
+            errors.append({"applied": applied, "error": str(exc)})
+    _APPLIED[:] = [a for a in _APPLIED if a not in revoked]
+    return {"revoked": revoked, "errors": errors}
+
+
+# Serve the built React app at / (Vite outputs to client/dist).
+# Mounted LAST so /api takes precedence. Guarded so the app still boots for
+# backend tests before the client is built.
+_DIST = os.path.join(os.path.dirname(os.path.dirname(__file__)), "client", "dist")
+if os.path.isdir(_DIST):
+    app.mount("/", StaticFiles(directory=_DIST, html=True), name="static")

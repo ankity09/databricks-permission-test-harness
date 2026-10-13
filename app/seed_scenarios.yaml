@@ -1,0 +1,24 @@
+# Seed role templates. The {catalog}/{schema}/{table} placeholders are hints for
+# the UI builder -- seed scenarios are templates the user fills in before running
+# (they are not resolved server-side). Action ids must match app/actions.yaml.
+scenarios:
+  - name: "Data Analyst"
+    description: "Read-only analytics on a schema: browse the catalog/schema and SELECT tables."
+    items:
+      - { action_id: "uc.catalog.use", securable: "{catalog}" }
+      - { action_id: "uc.schema.use", securable: "{catalog}.{schema}" }
+      - { action_id: "uc.table.select", securable: "{catalog}.{schema}.{table}" }
+
+  - name: "Data Engineer"
+    description: "Read + write on a schema's tables: browse, SELECT, and MODIFY."
+    items:
+      - { action_id: "uc.catalog.use", securable: "{catalog}" }
+      - { action_id: "uc.schema.use", securable: "{catalog}.{schema}" }
+      - { action_id: "uc.table.select", securable: "{catalog}.{schema}.{table}" }
+      - { action_id: "uc.table.modify", securable: "{catalog}.{schema}.{table}" }
+
+  - name: "Viewer"
+    description: "Catalog + schema browse only (no table data access)."
+    items:
+      - { action_id: "uc.catalog.use", securable: "{catalog}" }
+      - { action_id: "uc.schema.use", securable: "{catalog}.{schema}" }

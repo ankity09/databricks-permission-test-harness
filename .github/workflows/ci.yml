@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  python-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Run tests
+        run: pytest tests/ -v
+
+  frontend-checks:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: npm ci
+        working-directory: ./client
+        run: npm ci
+
+      - name: TypeScript check
+        working-directory: ./client
+        run: npx tsc -b
+
+      - name: ESLint
+        working-directory: ./client
+        run: npm run lint -- --max-warnings=0
+
+      - name: Build
+        working-directory: ./client
+        run: npm run build
+
+      - name: Check dist freshness
+        run: |
+          git diff --exit-code client/dist || {
+            echo "client/dist is not up-to-date. Please run 'npm run build' in client/ and commit."
+            exit 1
+          }
+
+  gitleaks:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
